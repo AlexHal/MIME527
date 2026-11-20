@@ -12,6 +12,11 @@ What is inside
     ore_summary(seed)             simulate one 2-D model and return its ore tonnes and metal
     mine_npv(grade, cutoff, stockpile_cutoff, seed)
                                   a toy mine -> stockpile -> plant simulator, returns NPV in $M
+    policy_grid(grade, seed, cutoffs, stockpile_cutoffs)
+                                  NPV of every policy on a grid, for one realization (tutorial)
+
+Every SGS function takes an optional holes_seed: each tutorial group drills a different deposit.
+holes_seed=2026 (the default) is the deposit used in the lectures.
 
 These are teaching models: small, fast and easy to read, not real mine-planning tools.
 """
@@ -89,32 +94,37 @@ def _simulate(rng, known_xy, known_values):
     return grid
 
 
-_DRILLHOLES = None
+_DRILLHOLES = {}
 
 
-def drillholes():
-    """30 made-up drillhole samples (positions and normal-score values)."""
-    global _DRILLHOLES
-    if _DRILLHOLES is None:
-        rng = np.random.default_rng(2026)
+def drillholes(holes_seed=2026):
+    """30 made-up drillhole samples (positions and normal-score values).
+    holes_seed picks the deposit: a different seed is a different 'true' orebody and different holes."""
+    if holes_seed not in _DRILLHOLES:
+        rng = np.random.default_rng(holes_seed)
         truth = _simulate(rng, [], [])
         picks = rng.choice(SIZE * SIZE, size=30, replace=False)
         xy = [divmod(int(p), SIZE) for p in picks]
-        _DRILLHOLES = (xy, [truth[i, j] for i, j in xy])
-    return _DRILLHOLES
+        _DRILLHOLES[holes_seed] = (xy, [truth[i, j] for i, j in xy])
+    return _DRILLHOLES[holes_seed]
 
 
-def sgs_2d(seed):
+def to_grade(z):
+    """Normal score -> Cu grade (%). Lognormal, mean about 0.45 % Cu."""
+    return np.exp(np.log(0.45) - 0.18 + 0.6 * np.asarray(z))
+
+
+def sgs_2d(seed, holes_seed=2026):
     """One realization of Cu grade (%) on the 40 x 40 block model, honouring the drillholes."""
-    xy, values = drillholes()
+    xy, values = drillholes(holes_seed)
     rng = np.random.default_rng(seed)
     z = _simulate(rng, xy, values)
-    return np.exp(np.log(0.45) - 0.18 + 0.6 * z)        # mean grade about 0.45 % Cu
+    return to_grade(z)
 
 
-def ore_summary(seed, cutoff=0.5):
+def ore_summary(seed, cutoff=0.5, holes_seed=2026):
     """Simulate one realization and return ore tonnes (Mt) and contained Cu (kt) above the cutoff."""
-    grade = sgs_2d(seed)
+    grade = sgs_2d(seed, holes_seed)
     ore = grade >= cutoff
     ore_mt = ore.sum() * BLOCK_TONNES / 1e6
     cu_kt = (grade[ore].sum() / 100) * BLOCK_TONNES / 1e3
@@ -179,3 +189,10 @@ def mine_npv(grade, cutoff, stockpile_cutoff, seed=0):
         npv += cash / (1 + DISCOUNT) ** period
         period += 1
     return npv / 1e6
+
+
+def policy_grid(grade, seed, cutoffs, stockpile_cutoffs):
+    """NPV ($M) of every (cutoff, stockpile cutoff) pair for ONE realization.
+    Returns an array of shape (len(cutoffs), len(stockpile_cutoffs)).
+    Used in the tutorial to send one realization per CPU core."""
+    return np.array([[mine_npv(grade, c, s, seed) for s in stockpile_cutoffs] for c in cutoffs])
